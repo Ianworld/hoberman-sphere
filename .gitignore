@@ -1,0 +1,11 @@
+# Python virtual environment (recreate with: python -m venv .venv && pip install ...)
+.venv/
+__pycache__/
+*.pyc
+
+# Generated STL meshes -- regenerate via the app's export or generate.py
+*.stl
+Back up stls/
+
+# macOS / editor cruft
+.DS_Store

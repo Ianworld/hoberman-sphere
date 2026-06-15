@@ -1,0 +1,9 @@
+numpy
+scipy
+shapely
+trimesh
+manifold3d
+rtree
+flask
+pywebview
+matplotlib

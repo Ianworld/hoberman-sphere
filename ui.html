@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Hoberman Sphere Designer</title>
+<style>
+  :root { --bg:#16181d; --panel:#1f2229; --line:#2e323b; --fg:#d8dbe2;
+          --dim:#8a8f9c; --acc:#e8853a; --ok:#3fbf6f; --bad:#e05252;
+          --warn:#e0a832; }
+  * { box-sizing:border-box; }
+  body { margin:0; display:flex; height:100vh; font:13px/1.45 -apple-system,
+         'Segoe UI', sans-serif; background:var(--bg); color:var(--fg); }
+  #left { width:480px; min-width:480px; overflow-y:auto; background:var(--panel);
+          border-right:1px solid var(--line); padding:14px 16px; }
+  h1 { font-size:15px; margin:0 0 10px; }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em;
+       color:var(--dim); margin:18px 0 6px; }
+  .ctl { margin-bottom:9px; }
+  .ctl .lab { display:flex; justify-content:space-between; }
+  .ctl .lab span.u { color:var(--dim); }
+  .row { display:flex; align-items:center; gap:6px; margin-top:2px; }
+  input[type=number] { width:62px; background:#14161a; color:var(--fg);
+      border:1px solid var(--line); border-radius:4px; padding:3px 5px;
+      font-size:12px; }
+  input[type=number].rng { width:52px; color:var(--dim); }
+  input[type=range] { flex:1; accent-color:var(--acc); }
+  input[type=number]:focus { border-color:var(--acc); outline:none; }
+  #derived { width:100%; border-collapse:collapse; }
+  #derived td { padding:2px 4px; border-bottom:1px solid var(--line); }
+  #derived td:last-child { text-align:right; font-variant-numeric:tabular-nums;
+      color:#fff; }
+  #right { flex:1; display:flex; flex-direction:column; }
+  #views { flex:1; display:flex; min-height:0; }
+  .view { flex:1; position:relative; }
+  .view + .view { border-left:1px solid var(--line); }
+  .view .cap { position:absolute; top:8px; left:10px; color:var(--dim);
+      font-size:12px; z-index:2; pointer-events:none; }
+  #bottombar { border-top:1px solid var(--line); background:var(--panel);
+      padding:8px 14px; max-height:200px; overflow-y:auto; }
+  #topbar { display:flex; gap:14px; align-items:center; padding:8px 14px;
+      border-bottom:1px solid var(--line); background:var(--panel); }
+  .chip { padding:3px 10px; border-radius:11px; font-size:12px; }
+  .chip.idle { background:#2a2d35; color:var(--dim); }
+  .chip.run  { background:#3a3320; color:var(--warn); }
+  .chip.ok   { background:#1c3a28; color:var(--ok); }
+  .chip.bad  { background:#3f2222; color:var(--bad); }
+  button { background:#2a2d35; color:var(--fg); border:1px solid var(--line);
+      border-radius:5px; padding:5px 12px; cursor:pointer; font-size:12px; }
+  button:hover { border-color:var(--acc); }
+  label.cb { display:flex; gap:6px; align-items:center; cursor:pointer; }
+  #violations { font-size:12px; }
+  #violations .v { color:var(--bad); }
+  #violations .s { color:var(--dim); margin-right:6px; }
+  .spin { display:inline-block; width:11px; height:11px; border:2px solid
+      var(--warn); border-top-color:transparent; border-radius:50%;
+      animation:sp .8s linear infinite; vertical-align:-2px; margin-right:6px;}
+  @keyframes sp { to { transform:rotate(360deg); } }
+  #err { color:var(--bad); margin-top:8px; white-space:pre-wrap; }
+  #warns { color:var(--warn); margin-top:6px; }
+</style>
+</head>
+<body>
+<div id="left">
+  <h1>Hoberman sphere designer</h1>
+  <div style="color:var(--dim)">Edit values, slider, or the slider end-points.
+    Views update live; derived values are computed, not settable.</div>
+  <div id="controls"></div>
+  <h2>Derived values</h2>
+  <table id="derived"></table>
+  <div id="warns"></div>
+  <div id="err"></div>
+  <h2>Export</h2>
+  <button id="exportBtn">Export full-quality STLs</button>
+  <div id="exportMsg" style="color:var(--dim); margin-top:6px;"></div>
+</div>
+<div id="right">
+  <div id="topbar">
+    <span id="buildChip" class="chip idle">idle</span>
+    <label class="cb"><input type="checkbox" id="autoCheck">
+      auto interference check</label>
+    <button id="checkBtn">Check now</button>
+    <span id="checkChip" class="chip idle">no check yet</span>
+  </div>
+  <div id="views">
+    <div class="view" id="viewL"><div class="cap">compressed (print state)</div></div>
+    <div class="view" id="viewR"><div class="cap">expanded</div></div>
+  </div>
+  <div id="bottombar">
+    <div id="checkDetail" style="color:var(--dim)">Interference results will
+      appear here. Red markers show contact locations in the views
+      (amber = mid-deployment, shown on the compressed view).</div>
+    <div id="violations"></div>
+  </div>
+</div>
+
+<!--VENDOR_JS-->
+<script type="module">
+/* three.js r147 + controls/loader are inlined above by designer.load_ui()
+   (vendor/ directory) so the app runs fully offline. */
+const { OrbitControls, STLLoader } = THREE;
+
+/* ---------------------------- python transport (pywebview bridge or http) */
+const APP_MODE = !!window.__APP_MODE;
+// pywebview attaches window.pywebview.api before its methods are populated,
+// so wait until the bridge functions actually exist
+const bridgeReady = APP_MODE ? new Promise(res => {
+  const ok = () => typeof window.pywebview?.api?.build === 'function';
+  if (ok()) return res();
+  const t = setInterval(() => { if (ok()) { clearInterval(t); res(); } }, 50);
+}) : Promise.resolve();
+
+async function b64buf(s) {
+  return (await fetch('data:application/octet-stream;base64,' + s))
+    .arrayBuffer();
+}
+
+async function post(path, body) {
+  return (await fetch(path, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}) })).json();
+}
+
+const API = {
+  async build(p) {
+    if (APP_MODE) {
+      await bridgeReady;
+      const r = await window.pywebview.api.build(p);
+      if (r.ok) {
+        r.meshes = { print: await b64buf(r.stl_print),
+                     open: await b64buf(r.stl_open) };
+        delete r.stl_print; delete r.stl_open;
+      }
+      return r;
+    }
+    const r = await post('/build', p);
+    if (r.ok) {
+      r.meshes = {};
+      for (const st of ['print', 'open']) {
+        const resp = await fetch(`/mesh?state=${st}&gen=${r.gen}`);
+        if (resp.status === 200) r.meshes[st] = await resp.arrayBuffer();
+      }
+    }
+    return r;
+  },
+  async check() {
+    if (APP_MODE) { await bridgeReady; return window.pywebview.api.check(); }
+    return post('/check');
+  },
+  async checkStatus() {
+    if (APP_MODE) { await bridgeReady;
+                    return window.pywebview.api.check_status(); }
+    return (await fetch('/check_status')).json();
+  },
+  async exportStl() {
+    if (APP_MODE) { await bridgeReady;
+                    return window.pywebview.api.export_stl(); }
+    return post('/export');
+  },
+  async exportStatus() {
+    if (APP_MODE) { await bridgeReady;
+                    return window.pywebview.api.export_status(); }
+    return (await fetch('/export_status')).json();
+  },
+};
+
+/* ---------------------------------------------------------- controls spec */
+const CONTROLS = [
+ {sec:'Size & expansion'},
+ {k:'box', l:'Compact box size', u:'mm', min:120, max:400, step:1, v:320},
+ {k:'Ri', l:'Fold depth Ri (smaller = more expansion)', u:'mm', min:30,
+  max:150, step:0.5, v:62},
+ {k:'open_frac', l:'Expansion limit (frac of kinematic max)', u:'', min:0.8,
+  max:0.995, step:0.005, v:0.99},
+ {sec:'Links'},
+ {k:'t', l:'Link thickness', u:'mm', min:1.5, max:5, step:0.1, v:2.6},
+ {k:'w', l:'Link width', u:'mm', min:2.5, max:8, step:0.1, v:4.0},
+ {k:'r_boss', l:'Joint boss radius', u:'mm', min:2.5, max:6, step:0.1, v:3.5},
+ {k:'h', l:'Layer offset from ring plane', u:'mm', min:4, max:12, step:0.1,
+  v:6.5},
+ {k:'jog', l:'Vertex-end jog (clearance at ring crossings)', u:'mm', min:0,
+  max:8, step:0.1, v:4.5},
+ {k:'jog_len', l:'Vertex-end jog length', u:'mm', min:8, max:25, step:0.5,
+  v:16},
+ {sec:'Joints & 3D printing'},
+ {k:'pin_d', l:'Pin diameter', u:'mm', min:2, max:6, step:0.1, v:3.0},
+ {k:'clr', l:'Pin radial clearance', u:'mm', min:0.2, max:1.0, step:0.05,
+  v:0.5},
+ {k:'c_ax', l:'Axial (face-to-face) clearance', u:'mm', min:0.2, max:1.0,
+  step:0.05, v:0.5},
+ {k:'cap_t', l:'Retaining cap thickness', u:'mm', min:0.8, max:3, step:0.1,
+  v:1.6},
+ {k:'r_body', l:'Connector ball radius', u:'mm', min:2.5, max:6, step:0.1,
+  v:4.0},
+];
+
+const params = {};
+const ctlDiv = document.getElementById('controls');
+for (const c of CONTROLS) {
+  if (c.sec) {
+    const h = document.createElement('h2'); h.textContent = c.sec;
+    ctlDiv.appendChild(h); continue;
+  }
+  params[c.k] = c.v;
+  const d = document.createElement('div'); d.className = 'ctl';
+  d.innerHTML = `
+    <div class="lab"><span>${c.l}</span><span class="u">${c.u}</span></div>
+    <div class="row">
+      <input class="rng" type="number" value="${c.min}" step="${c.step}"
+             title="slider minimum">
+      <input type="range" min="${c.min}" max="${c.max}" step="${c.step}"
+             value="${c.v}">
+      <input class="rng" type="number" value="${c.max}" step="${c.step}"
+             title="slider maximum">
+      <input class="val" type="number" value="${c.v}" step="${c.step}">
+    </div>`;
+  const [mn, sl, mx, val] = d.querySelectorAll('input');
+  const set = (x) => {
+    x = Math.max(+mn.value, Math.min(+mx.value, +x));
+    params[c.k] = x; sl.value = x; val.value = x; schedule();
+  };
+  sl.addEventListener('input', () => set(sl.value));
+  val.addEventListener('change', () => set(val.value));
+  mn.addEventListener('change', () => { sl.min = mn.value; set(sl.value); });
+  mx.addEventListener('change', () => { sl.max = mx.value; set(sl.value); });
+  ctlDiv.appendChild(d);
+}
+
+/* ------------------------------------------------------------- 3D viewers */
+function makeViewer(el) {
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x16181d);
+  const cam = new THREE.PerspectiveCamera(40, 1, 1, 8000);
+  cam.position.set(350, 230, 420);
+  const ren = new THREE.WebGLRenderer({ antialias: true });
+  el.appendChild(ren.domElement);
+  const ctl = new OrbitControls(cam, ren.domElement);
+  ctl.enableDamping = true;
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x303540, 0.7));
+  const dl = new THREE.DirectionalLight(0xffffff, 0.75);
+  dl.position.set(1, 1.4, 0.8); scene.add(dl);
+  const mat = new THREE.MeshPhongMaterial({ color: 0xe8853a,
+    flatShading: true, shininess: 25 });
+  let mesh = null;
+  const markers = new THREE.Group(); scene.add(markers);
+  function resize() {
+    const w = el.clientWidth, h = el.clientHeight;
+    if (!w || !h) return;
+    ren.setSize(w, h); cam.aspect = w / h; cam.updateProjectionMatrix();
+  }
+  new ResizeObserver(resize).observe(el); resize();
+  (function loop() { requestAnimationFrame(loop); ctl.update();
+                     ren.render(scene, cam); })();
+  return {
+    setGeom(geom) {
+      if (mesh) { scene.remove(mesh); mesh.geometry.dispose(); }
+      mesh = new THREE.Mesh(geom, mat); scene.add(mesh);
+      geom.computeBoundingSphere();
+      const r = geom.boundingSphere.radius;
+      if (!this._r || Math.abs(r - this._r) / this._r > 0.03) {
+        const vh = Math.tan((cam.fov / 2) * Math.PI / 180);
+        const hh = vh * cam.aspect;
+        const dist = (r / Math.min(vh, hh)) * 1.12;
+        cam.position.normalize().multiplyScalar(dist);
+        ctl.target.set(0, 0, 0);
+      }
+      this._r = r;
+    },
+    setMarkers(pts, color, radius) {
+      markers.clear();
+      for (const p of pts) {
+        const m = new THREE.Mesh(new THREE.SphereGeometry(radius, 12, 8),
+          new THREE.MeshBasicMaterial({ color }));
+        m.position.set(p[0], p[1], p[2]); markers.add(m);
+      }
+    },
+    clearMarkers() { markers.clear(); },
+  };
+}
+const viewL = makeViewer(document.getElementById('viewL'));
+const viewR = makeViewer(document.getElementById('viewR'));
+
+/* ------------------------------------------------------------- build flow */
+const $ = (id) => document.getElementById(id);
+let timer = null, gen = 0, building = false, pendingBuild = false;
+const loader = new STLLoader();
+
+function schedule() { clearTimeout(timer); timer = setTimeout(doBuild, 450); }
+
+async function doBuild() {
+  if (building) { pendingBuild = true; return; }
+  building = true;
+  $('buildChip').className = 'chip run';
+  $('buildChip').innerHTML = '<span class="spin"></span>building preview...';
+  $('err').textContent = '';
+  try {
+    const r = await API.build(params);
+    if (!r.ok) { $('err').textContent = 'Error: ' + r.error; return; }
+    gen = r.gen; window._gen = gen;
+    $('derived').innerHTML = Object.entries(r.derived)
+      .map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+    $('warns').textContent = r.warnings.length
+      ? '⚠ ' + r.warnings.join('; ') : '';
+    for (const [state, view] of [['print', viewL], ['open', viewR]]) {
+      if (!r.meshes[state]) continue;
+      view.setGeom(loader.parse(r.meshes[state]));
+      view.clearMarkers();
+    }
+    setCheckChip('idle', 'not checked for current settings');
+    if ($('autoCheck').checked) startCheck();
+  } catch (e) { $('err').textContent = 'Error: ' + e; }
+  finally {
+    building = false;
+    $('buildChip').className = 'chip idle'; $('buildChip').textContent = 'idle';
+    if (pendingBuild) { pendingBuild = false; doBuild(); }
+  }
+}
+
+/* ---------------------------------------------------- interference checks */
+function setCheckChip(cls, html) {
+  $('checkChip').className = 'chip ' + cls; $('checkChip').innerHTML = html;
+}
+
+async function startCheck() {
+  const r = await API.check();
+  if (!r.ok) { setCheckChip('bad', 'check not started: ' + r.error); return; }
+  setCheckChip('run', '<span class="spin"></span>checking...');
+}
+$('checkBtn').onclick = startCheck;
+$('autoCheck').onchange = () => { if ($('autoCheck').checked) startCheck(); };
+
+setInterval(async () => {
+  try {
+    const s = await API.checkStatus();
+    if (s.running) {
+      setCheckChip('run', '<span class="spin"></span>' + (s.stage || 'checking...'));
+      return;
+    }
+    if (s.error) { setCheckChip('bad', 'check failed: ' + s.error); return; }
+    if (!s.result) return;
+    const stale = s.gen !== gen ? ' (settings changed since)' : '';
+    const R = s.result;
+    const per = R.perState.map(p =>
+      `${p.state}: free ${p.freeMin} / joint ${p.jointMin} mm`).join(' &nbsp;|&nbsp; ');
+    if (R.ok) {
+      setCheckChip('ok', `✓ no interference (worst free gap ${R.worstFree} mm)${stale}`);
+      $('violations').innerHTML =
+        `<span style="color:var(--ok)">All ${R.perState.reduce((a,p)=>a+p.pairs,0)}
+         nearby part pairs clear in all 4 states.</span><br>
+         <span class="s">${per}</span>`;
+      viewL.clearMarkers(); viewR.clearMarkers();
+    } else {
+      setCheckChip('bad', `✗ ${R.total} interference${R.total>1?'s':''}${stale}`);
+      $('violations').innerHTML =
+        `<div class="s">${per}</div>` + R.violations.map(v =>
+        `<div class="v">[${v.state}] ${v.a} ↔ ${v.b} &mdash; gap
+         ${v.gap} mm${v.joint ? ' (joint pair)' : ''}${v.point ?
+         ` at (${v.point.map(x=>x.toFixed(0)).join(', ')})` : ''}</div>`
+        ).join('') + (R.total > R.violations.length ?
+        `<div class="s">...and ${R.total - R.violations.length} more</div>` : '');
+      const rad = params.box / 70;
+      viewL.setMarkers(R.violations.filter(v => v.state === 'print' && v.point)
+        .map(v => v.point), 0xff3333, rad);
+      viewL.setMarkers; // keep eslint quiet
+      const mids = R.violations.filter(v => v.state.startsWith('mid') && v.point);
+      if (mids.length) {
+        // mid-deployment contacts shown amber on the compressed view
+        const all = R.violations.filter(v =>
+          (v.state === 'print' || v.state.startsWith('mid')) && v.point);
+        viewL.setMarkers(all.map(v => v.point),
+          mids.length === all.length ? 0xe0a832 : 0xff5533, rad);
+      }
+      viewR.setMarkers(R.violations.filter(v => v.state === 'open' && v.point)
+        .map(v => v.point), 0xff3333, params.box / 35);
+    }
+  } catch (e) { /* server momentarily busy */ }
+}, 650);
+
+/* ----------------------------------------------------------------- export */
+$('exportBtn').onclick = async () => {
+  const r = await API.exportStl();
+  if (!r.ok) { $('exportMsg').textContent = r.error; return; }
+  const t = setInterval(async () => {
+    const s = await API.exportStatus();
+    $('exportMsg').innerHTML = s.running
+      ? '<span class="spin"></span>' + s.message
+      : (s.error ? 'Error: ' + s.error : s.message);
+    if (!s.running) clearInterval(t);
+  }, 700);
+};
+
+doBuild();
+</script>
+</body>
+</html>

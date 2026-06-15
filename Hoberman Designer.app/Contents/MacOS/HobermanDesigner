@@ -1,0 +1,6 @@
+#!/bin/zsh
+# Resolve hoberman/ (three levels up from this executable), following symlinks
+exe="${0:A}"
+root="${exe:h:h:h:h}"
+cd "$root" || exit 1
+exec "./.venv/bin/python" "app.py" 2>>/tmp/hoberman_app.log
