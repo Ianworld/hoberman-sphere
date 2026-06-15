@@ -21,6 +21,19 @@ Print-in-place features (all clearance-checked in code):
   directions, and jogged vertex ends -- all needed to clear the crossing-ring
   contention near the 30 vertices
 
+## Setup
+
+The Python virtual environment is not checked in -- create it once after
+cloning:
+
+    python3 -m venv .venv
+    ./.venv/bin/pip install -r requirements.txt
+
+This installs numpy/scipy/shapely/trimesh/manifold3d/rtree (geometry +
+clearance checks), flask (browser version), pywebview (desktop app), and
+matplotlib (preview renders).  The app's launcher expects the env at
+`.venv/` inside this directory.
+
 ## Usage
 
 Desktop app (recommended -- no server, opens a native window):
