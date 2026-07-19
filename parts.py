@@ -73,10 +73,23 @@ def _bands(poly, hole_pts, z_mid, P):
         for p, dia in hole_pts:
             pl = pl.difference(Point(tuple(p)).buffer(
                 dia / 2, quad_segs=SEG // 4))
-        slab = trimesh.creation.extrude_polygon(pl, height=z1 - z0)
-        slab.apply_translation([0, 0, z0])
-        out.append(slab)
+        # erosion/holes can split the outline into several pieces (or eat a
+        # band entirely) when holes approach the arm width -- extrude each
+        for piece in _polys(pl):
+            slab = trimesh.creation.extrude_polygon(piece, height=z1 - z0)
+            slab.apply_translation([0, 0, z0])
+            out.append(slab)
     return out
+
+
+def _polys(geom):
+    """Individual non-empty Polygons of any shapely geometry."""
+    if geom.is_empty:
+        return []
+    if geom.geom_type == 'Polygon':
+        return [geom]
+    return [g for g in getattr(geom, 'geoms', [])
+            if g.geom_type == 'Polygon' and not g.is_empty]
 
 
 def link_mesh(p_a, p_k, p_b, z_mid, pin_pts, hole_pts, P, frame, jog_end):

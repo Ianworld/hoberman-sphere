@@ -132,6 +132,10 @@ def do_build(u):
         warn = []
         if gap2d < 0.5:
             warn.append(f'in-ring 2D clearance {gap2d:.2f} mm < 0.5 mm')
+        wall = P['r_boss'] - P['hole_d'] / 2
+        if wall < 0.8:
+            warn.append(f'joint boss wall only {wall:.2f} mm -- increase '
+                        'boss radius or reduce pin diameter/clearance')
         return dict(ok=True, gen=gen, derived=derived, warnings=warn,
                     stl_print=CACHE['stl']['print'],
                     stl_open=CACHE['stl']['open'])
